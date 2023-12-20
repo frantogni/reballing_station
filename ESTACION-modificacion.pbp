@@ -1,0 +1,771 @@
+'****************************************************************
+'*  Name    : ProgramaPID.pbp                                   *
+'*  Author  : Francisco Togni - Soluciones Electronicas         *
+'*  Notice  : Copyright (c) 2012 Safe Creative                  *
+'*          : All Rights Reserved                               *
+'*  Date    : --/--/----                                        *
+'*  Version : 1.0                                               *
+'*  Notes   :                                                   *
+'****************************************************************
+
+'-------------------------------------------------------------------------------
+'  Setear frecuencia de reloj
+'-------------------------------------------------------------------------------
+DEFINE  OSC 20
+
+'-------------------------------------------------------------------------------
+'  Definiciones I/O 
+'-------------------------------------------------------------------------------
+'Setear ADC (F=RC,CH=0,CON=0FF,ADC=ON)
+ADCON0 = %10000001
+'Setear ADC (JD,F=RC,CH=AN0,REF+=AN3,REF-=AN2)
+ADCON1 = %10000101
+'Deshabilitar comparadores PORTA 
+CMCON = %00000111
+;Setear PORTA como entradas
+TRISA = %11111111
+'Setear PORTB como entradas (RB0 interrupcion)
+TRISB = %11111111
+'Setear PORTC como entradas                          
+TRISC = %11111111
+;Seteos   
+;OPTION_REG=%11100000        
+;Habilitacion interrupcion global
+INTCON = %10000000                            
+
+'-------------------------------------------------------------------------------
+'  Vector de interrupcion 
+'-------------------------------------------------------------------------------      
+on interrupt goto conteo        
+
+'-------------------------------------------------------------------------------
+'  LCD defines
+'-------------------------------------------------------------------------------
+'Definicion puerto conectado a LCD (pines de data D4 a D7)
+DEFINE  LCD_DREG    PORTD
+'Definicion bit inicial de datos en bus LCD (0 para 8-bit o 4 para 4-bit)
+DEFINE  LCD_DBIT    4
+'Definicion de tamaño de bus LCD (4-bit o 8-bit)
+DEFINE  LCD_BITS    4
+'Definicion de puerto para LCD register select(RS)
+DEFINE  LCD_RSREG   PORTD
+'Definicion de pin para LCD register select(RS)
+DEFINE  LCD_RSBIT   1
+'Definicion de puerto para LCD enable(E)
+DEFINE  LCD_EREG    PORTD
+'Definicion de pin para LCD enable(E)
+DEFINE  LCD_EBIT    3
+'Definicion de numero de lineas LCD
+DEFINE  LCD_LINES   4
+'Definicion de command delay time para LCD 
+DEFINE  LCD_COMMANDUS   2000  
+'Definicion de data delay time para LCD 
+DEFINE  LCD_DATAUS  50
+
+'-------------------------------------------------------------------------------
+'  Asignacion de puerto y pines para botones
+'-------------------------------------------------------------------------------
+'Boton flecha arriba
+SW1 VAR PORTB.1             
+'Boton flecha abajo
+SW2 VAR PORTB.2             
+'Boton entrada
+SW3 VAR PORTB.3 
+'Boton flecha derecha
+SW4 VAR PORTB.4
+'Boton flecha izquierda
+SW5 VAR PORTB.5
+
+'-------------------------------------------------------------------------------
+'  Rutina de variables de menu
+'-------------------------------------------------------------------------------
+'Valor incremental de submenu
+index   VAR BYTE
+'Ultimo valor incremental de menu main
+last_index_main   VAR BYTE
+'Ultimo valor incremental de menu perfil
+last_index_perfil   VAR BYTE
+'Ultimo valor incremental de menu edit
+last_index_edit   VAR BYTE
+'Valor ENTER
+enter   VAR Bit
+
+'-------------------------------------------------------------------------------
+'  Variables de edicion de parametros de perfil
+'-------------------------------------------------------------------------------
+'Valor minimo
+minVal  VAR WORD                                                                                                                                          
+'Valor maximo
+maxVal  VAR WORD
+'Valor actual
+valor   VAR WORD
+
+'-------------------------------------------------------------------------------
+'  Variables de perfil
+'-------------------------------------------------------------------------------
+PREHEAT_TEMPERATURE      VAR    BYTE
+PREHEAT_TIME             VAR    BYTE
+SOAK_TEMPERATURE         VAR    BYTE
+SOAK_TIME                VAR    BYTE
+REFLOW_TEMPERATURE       VAR    BYTE
+REFLOW_TIME              VAR    BYTE
+COOLDOWN_TEMPERATURE     VAR    BYTE
+COOLDOWN_TIME            VAR    BYTE
+
+'-------------------------------------------------------------------------------
+'  Valores por defecto en EEPROM 
+'-------------------------------------------------------------------------------
+DATA @0,150     ;PREHEAT_TEMPERATURE     
+DATA @1,90      ;PREHEAT_TIME
+DATA @2,183     ;SOAK_TEMPERATURE
+DATA @3,90      ;SOAK_TIME
+DATA @4,220     ;REFLOW_TEMPERATURE
+DATA @5,10      ;REFLOW_TIME
+DATA @6,60      ;COOLDOWN_TEMPERATURE
+DATA @7,0       ;COOLDOWN_TIME
+DATA @8,11      ;Kp 
+DATA @9,5       ;Ki
+DATA @10,1      ;Kd
+DATA @11,5      ;cycleTime                    
+
+'-------------------------------------------------------------------------------
+'  Asignacion de puerto y pines para SSR
+'------------------------------------------------------------------------------- 
+'Salida Relay 0
+RELAY0  VAR PORTB.3                                                                                                                                                            
+'Salida Relay 1
+RELAY1  VAR PORTB.4
+'Salida Relay 2
+RELAY2  VAR PORTB.5
+
+'-------------------------------------------------------------------------------
+'  Asignacion de puerto y pines para LED 
+'-------------------------------------------------------------------------------
+LED0    VAR PORTC.0                                                                           
+LED1    VAR PORTC.1
+LED2    VAR PORTC.2
+
+'-------------------------------------------------------------------------------
+'  Asignacion de puerto y pin para Buzzer
+'-------------------------------------------------------------------------------
+'Usado para indicacion audible de proceso completo
+BUZZER      VAR PORTD.0
+'Usado para determinar duracion del tono
+duracion    VAR BYTE
+
+'-------------------------------------------------------------------------------
+'  Variables de Tiempo
+'-------------------------------------------------------------------------------
+minutos         var byte
+segundos        var byte
+elapsedTime     VAR WORD
+SecondsChanged  var bit 
+
+'-------------------------------------------------------------------------------
+'  Variables de Temperatura y parametros PID
+'-------------------------------------------------------------------------------
+curTemp         VAR WORD
+setpoint        VAR WORD
+ARRAY_TEMPS     VAR BYTE[4]
+minLimit        VAR BYTE
+maxLimit        VAR BYTE
+Tvar            VAR BYTE
+TimeOn          VAR BYTE
+cycleTime       VAR BYTE                                                         
+outMin          VAR BYTE
+outMax          VAR BYTE
+outVal          VAR WORD
+pTerm           VAR WORD
+iTerm           VAR WORD
+dTerm           VAR WORD
+Kp              VAR BYTE
+Ki              VAR BYTE
+Kd              VAR BYTE
+errorCurrent    VAR WORD 
+lastMeasured    VAR WORD
+
+'-------------------------------------------------------------------------------
+'  Inicio de variables
+'------------------------------------------------------------------------------- 
+INIT_VARIABLES:    
+    'Inicio de variables de temperatura
+    curTemp = 0
+    setpoint = 0    
+    GOSUB READ_PID    
+    minLimit = 0
+    maxLimit = cycleTime   
+    Tvar = 0
+    TimeOn = 0                                                             
+    outMin = minLimit
+    outMax = maxLimit
+    outVal = 0
+    pTerm = 0
+    iTerm = 0
+    dTerm = 0
+    errorCurrent = 0
+    lastMeasured = 0   
+    'Todas las salidas de Relay apagadas
+    LOW RELAY0
+    LOW RELAY1
+    LOW RELAY2
+    LOW LED0
+    LOW LED1
+    LOW LED2    
+    'Todas las variables de tiempo en cero
+    minutos = 0
+    segundos = 0
+    'Iniciar las variables de menu
+    last_index_main=1
+    last_index_perfil=1
+    last_index_edit=1          
+    'Iniciar variables de perfil
+    GOSUB READ_PROFILE  
+
+'-------------------------------------------------------------------------------
+'  Inicializacion de LCD 
+'-------------------------------------------------------------------------------   
+    PAUSE 500       
+    'Enviar caracteres de usuario a memoria de LCD
+    GOSUB CUSTOM_CHARACTERS
+
+'-------------------------------------------------------------------------------
+'  Menu Principal
+'-------------------------------------------------------------------------------
+    'Display menu en LCD
+    lcdout $FE,1
+    lcdout $FE,$84,"ESTACION"
+    lcdout $FE,$c2,"DE REBALLING"    
+    pause 1000
+    
+MAIN_MENU:    
+    lcdout $FE,1 
+    lcdout $FE, $85,"-MENU-"
+    lcdout $FE,$C0,"<",$FE,$CA,"(E)",$FE,$CF,">"   
+    'Setear variables de menu
+    index=last_index_main
+    enter=0
+    
+vista_a:
+    'Saltar al menu seleccionado    
+    select case index
+        CASE 1 : lcdout $FE,$C3,"Iniciar"
+        CASE 2 : lcdout $fe,$c3,"Config."
+        case 3 : lcdout $FE,$C3,"Calibr."
+        case 4 : lcdout $FE,$C3," Sensor"
+        case 5 : lcdout $FE,$c3,"Version"
+        case else
+    end select
+    
+    if enter=1 then
+        enter=0
+        last_index_main=index
+        last_index_perfil=1
+        select case index
+            CASE 1 : INTCON.4=1 : goto PREHEAT
+            CASE 2 : GOTO EDIT_PERFIL_MENU
+            case 3 : GOTO EDIT_PID_MENU
+            case 4 : lcdout $FE,1,$fe,$84,"-SENSOR-",$FE,$C2,"Lectura:",$fe,$ce,0,$fe,$cf,"C" : GOTO SENSOR_TEST
+            case 5 : lcdout $FE,$80,"ProgramaPID V1.0",$FE,$C0,"Safe Creative(",$fe,$ce,2,")" : enter=0 : pause 1500 : goto MAIN_MENU
+            case else
+        end select
+    ENDIF
+        
+    GOSUB MENU_BOTONES
+    if index=6 then index=1
+    if index=0 then index=5
+    goto vista_a  
+    
+'-------------------------------------------------------------------------------
+'  Menu de Perfil
+'-------------------------------------------------------------------------------
+EDIT_PERFIL_MENU:  
+    lcdout $FE,1 
+    lcdout $FE, $84,"-PERFIL-"
+    lcdout $FE,$C0,"<",$FE,$CA,"(E)",$FE,$CF,">"    
+    'Setear variables de menu
+    index=last_index_perfil
+        
+vista_b:
+    'Saltar al menu seleccionado    
+    select case index
+        CASE 1 : lcdout $FE,$C3,"Preheat"
+        CASE 2 : lcdout $fe,$c3,"   Soak"
+        case 3 : lcdout $FE,$C3," Reflow"
+        case 4 : lcdout $FE,$C3,"Cooldwn"
+        case 5 : lcdout $FE,$C3," Volver"
+        case else
+    end select
+    
+    if enter=1 then
+        ENTER= 0
+        last_index_perfil=index
+        last_index_edit=1
+        lcdout $FE,$C0,"<",$FE,$CA,"(E)",$FE,$CF,">"
+        select case index
+            CASE 1 : goto EDIT_PREHEAT_MENU
+            CASE 2 : GOTO EDIT_SOAK_MENU
+            case 3 : GOTO EDIT_REFLOW_MENU
+            case 4 : GOTO EDIT_COOLDOWN_MENU
+            case 5 : GOTO MAIN_MENU
+            case else
+        end select
+    ENDIF
+        
+    GOSUB MENU_BOTONES
+    if index=6 then index=1
+    if index=0 then index=5
+    goto vista_b
+
+'-------------------------------------------------------------------------------
+'  Editar parametros de perfil PREHEAT 
+'-------------------------------------------------------------------------------
+EDIT_PREHEAT_MENU:
+    lcdout $FE,$84,"-PREHEAT-"
+    index=last_index_edit
+    
+VISTA_D:       
+    gosub PROFILE_DIALOG    
+    if enter=1 then
+        enter=0
+        last_index_edit=index
+        select case index
+            case 1 : lastMeasured = preheat_temperature :   GOsub EDIT_T : PREHEAT_TEMPERATURE=valor :   GOSUB WRITE_PROFILE : goto EDIT_PREHEAT_MENU
+            case 2 : lastMeasured = preheat_time :          GOSUB EDIT_T : PREHEAT_Time=valor :          GOSUB WRITE_PROFILE : goto EDIT_PREHEAT_MENU
+            case 3 : GOTO EDIT_PERFIL_MENU
+            case else
+        end select
+    ENDIF
+    
+    GOSUB MENU_BOTONES
+    IF INDEX=4 THEN INDEX=1
+    IF INDEX=0 THEN INDEX=3
+    GOTO VISTA_D
+
+'-------------------------------------------------------------------------------
+'  Editar parametros de perfil SOAK 
+'-------------------------------------------------------------------------------
+EDIT_SOAK_MENU:
+    lcdout $FE,$84," -SOAK- "
+    index=last_index_edit
+    
+VISTA_E:    
+    gosub PROFILE_DIALOG   
+    if enter=1 then
+        enter=0
+        last_index_edit=index    
+        select case index
+            case 1 : lastMeasured = soak_temperature : GOsub EDIT_T : soak_TEMPERATURE=valor : GOSUB WRITE_PROFILE : goto EDIT_SOAK_MENU
+            case 2 : lastMeasured = soak_time : GOSUB EDIT_T : soak_Time=valor : GOSUB WRITE_PROFILE : goto EDIT_SOAK_MENU
+            case 3 : GOTO EDIT_PERFIL_MENU
+            case else
+        end select
+    ENDIF
+    GOSUB MENU_BOTONES
+    IF INDEX=4 THEN INDEX=1
+    IF INDEX=0 THEN INDEX=3
+    GOTO VISTA_E
+
+'-------------------------------------------------------------------------------
+'  Editar parametros de perfil REFLOW 
+'-------------------------------------------------------------------------------
+EDIT_REFLOW_MENU:
+    lcdout $FE, $84,"-REFLOW-"
+    index=last_index_edit
+      
+VISTA_F:    
+    gosub PROFILE_DIALOG     
+    if enter=1 then
+        enter=0
+        last_index_edit=index     
+        select case index
+            case 1 : lastMeasured = REFLOW_temperature :  : GOsub EDIT_T : REFLOW_TEMPERATURE=valor : GOSUB WRITE_PROFILE : goto EDIT_REFLOW_MENU
+            case 2 : lastMeasured = REFLOW_time :  : GOSUB EDIT_T : REFLOW_Time=valor : GOSUB WRITE_PROFILE : goto EDIT_REFLOW_MENU
+            case 3 : GOTO EDIT_PERFIL_MENU
+            case else
+        end select
+    ENDIF
+    GOSUB MENU_BOTONES
+    IF INDEX=4 THEN INDEX=1
+    IF INDEX=0 THEN INDEX=3
+    GOTO VISTA_F
+
+'-------------------------------------------------------------------------------
+'  Editar parametros de perfil COOLDOWN 
+'-------------------------------------------------------------------------------
+EDIT_COOLDOWN_MENU:
+    lcdout $FE,$83,"-COOLDOWN-"
+    index=last_index_edit
+    
+VISTA_G:    
+    gosub PROFILE_DIALOG    
+    if enter=1 then
+        enter=0
+        last_index_edit=index     
+        select case index
+            case 1 : lastMeasured = COOLDOWN_temperature :  : GOsub EDIT_T : COOLDOWN_TEMPERATURE=valor : GOSUB WRITE_PROFILE : goto EDIT_COOLDOWN_MENU
+            case 2 : lastMeasured = COOLDOWN_time :  : GOSUB EDIT_T : COOLDOWN_Time=valor : GOSUB WRITE_PROFILE : goto EDIT_COOLDOWN_MENU
+            case 3 : GOTO EDIT_PERFIL_MENU
+            case else
+        end select
+    ENDIF
+    GOSUB MENU_BOTONES
+    IF INDEX=4 THEN INDEX=1
+    IF INDEX=0 THEN INDEX=3    
+    GOTO VISTA_G
+    
+'-------------------------------------------------------------------------------
+'  Dialogo de edición de perfil
+'-------------------------------------------------------------------------------
+PROFILE_DIALOG:
+    'Display menu en LCD
+    select case index
+        CASE 1 : lcdout $FE,$C3,"  Temp."
+        CASE 2 : lcdout $fe,$c3," Tiempo"
+        case 3 : lcdout $FE,$C3," Volver"
+        case else
+    end select
+RETURN
+
+'-------------------------------------------------------------------------------
+'  Dialogo de edición de parametros perfil
+'-------------------------------------------------------------------------------
+EDIT_T:
+    VALOR = lastMeasured
+    if index=1 then lcdout $FE,$C4,DEC3 valor,0,$fe,$c8,"C "
+    if index=2 then lcdout $FE,$C4,DEC3 valor,"seg"
+BUCLE_1:
+    GOSUB MENU_BOTONES
+    lcdout $FE,$C4,dec3 valor    
+    IF ENTER=1 THEN enter=0 : return
+    
+    GOTO BUCLE_1
+
+'-------------------------------------------------------------------------------
+'  Editar parametros PID 
+'-------------------------------------------------------------------------------
+EDIT_PID_MENU:
+    lcdout $FE,1 
+    lcdout $FE, $86,"-PID-"
+    lcdout $FE,$C0,"<",$FE,$CA,"(E)",$FE,$CF,">"
+    index=last_index_perfil    
+    
+vista_c:
+    'Saltar al menu seleccionado    
+    select case index
+        CASE 1 : lcdout $FE,$C3,"    Kp "
+        CASE 2 : lcdout $fe,$c3,"    Ki "
+        case 3 : lcdout $FE,$C3,"    Kd "
+        case 4 : lcdout $FE,$C3,"  Cycle"
+        case 5 : lcdout $FE,$C3," Volver"
+        case else
+    end select    
+    if enter=1 then
+        ENTER= 0
+        last_index_perfil=index
+        last_index_edit=1        
+        select case index
+            CASE 1 : lcdout $FE,$81,"-PROPORCIONAL-" :  lastMeasured = Kp :         gosub EDIT_PID_PARAMETROS : Kp = valor :        GOSUB WRITE_PID : goto EDIT_PID_MENU
+            CASE 2 : lcdout $FE,$83,"-INTEGRAL-" :      lastMeasured = Ki :         gosub EDIT_PID_PARAMETROS : Ki = valor :        GOSUB WRITE_PID : goto EDIT_PID_MENU
+            case 3 : lcdout $FE,$82,"-DERIVATIVO-" :    lastMeasured = Kd :         gosub EDIT_PID_PARAMETROS : Kd = valor :        GOSUB WRITE_PID : goto EDIT_PID_MENU
+            case 4 : lcdout $FE,$82,"-CYCLE TIME-" :    lastMeasured = cycleTime :  gosub EDIT_PID_PARAMETROS : cycleTime = valor : GOSUB WRITE_PID : goto EDIT_PID_MENU
+            case 5 : GOTO MAIN_MENU
+            case else
+        end select
+    ENDIF    
+    GOSUB MENU_BOTONES
+    if index=6 then index=1
+    if index=0 then index=5    
+    goto vista_c
+
+'-------------------------------------------------------------------------------
+'  Editar parametros PID
+'-------------------------------------------------------------------------------
+EDIT_PID_PARAMETROS:
+    VALOR = lastMeasured   
+BUCLE_3:
+    lcdout $FE,$C5," ",DEC3 valor," "
+    GOSUB MENU_BOTONES    
+    IF ENTER=1 THEN enter=0 : return        
+    GOTO BUCLE_3
+
+'-------------------------------------------------------------------------------
+'  Prueba de sensor mediante medicion continua
+'-------------------------------------------------------------------------------
+SENSOR_TEST:
+    ;Seteo inicio de conversion
+    GOSUB READ_TEMPERATURE
+    LCDOUT $FE,$CB,DEC3 curtemp            
+    IF sw3=1 THEN gosub antirrebote : goto MAIN_MENU
+    pause 200
+    GOTO SENSOR_TEST
+
+'-------------------------------------------------------------------------------
+'  Fase Preheat 
+'-------------------------------------------------------------------------------
+PREHEAT:
+    LCDOUT $FE,1
+    LCDOUT $FE,$80,"Temp.:",$fe,$88,0,"C",$FE,$8b,"00:00"
+    lcdout $FE,$c0,"Setp.:",$fe,$c8,0,"C",$fe,$cc,DEC3 ELAPSEDTIME ;"000",$fe,$cf,1
+    setpoint = PREHEAT_TEMPERATURE
+    elapsedTime = PREHEAT_TIME       
+    GOSUB READ_TEMPERATURE    
+    IF (curTemp > 60) THEN GOTO COOLING        
+    ' Encender Heater
+    HIGH RELAY0 : HIGH LED0
+    ' Encender Fan
+    HIGH RELAY1 : HIGH LED1
+    GOSUB RAMP_UP
+    
+'-------------------------------------------------------------------------------
+'  Fase Soak
+'-------------------------------------------------------------------------------
+SOAK:
+    setpoint = SOAK_TEMPERATURE
+    elapsedTime = SOAK_TIME    
+    GOSUB PROCESS_PHASE
+    HIGH RELAY0 : HIGH LED0
+    
+'-------------------------------------------------------------------------------
+'  Fase de rampa a Reflow
+'-------------------------------------------------------------------------------
+REFLOW:
+    setpoint = REFLOW_TEMPERATURE
+    elapsedTime = REFLOW_TIME
+    GOSUB RAMP_UP   
+    GOSUB PROCESS_PHASE
+    
+'-------------------------------------------------------------------------------
+'  Cooling phase 
+'-------------------------------------------------------------------------------
+COOLING:
+    setpoint = COOLDOWN_TEMPERATURE
+    elapsedTime = COOLDOWN_TIME    
+    ' Apagar Heater
+    LOW RELAY0 : LOW LED0
+    GOSUB BEEP    
+    ' Encender Fan
+    HIGH RELAY1 : HIGH LED1    
+    WHILE (curTemp > setpoint)
+        GOSUB READ_TEMPERATURE
+    WEND
+    INTCON.4=0        
+    ' Apagar Fan
+    LOW RELAY1 : LOW LED1
+    GOSUB BEEP    
+    setpoint = 0
+    elapsedTime = 0       
+    LCDOUT $FE,1 
+    LCDOUT $FE,$82,"PROCEDIMIENTO",$FE,$C4,"TERMINADO"    
+    pause 5000   
+    GOTO INIT_VARIABLES
+    
+'-------------------------------------------------------------------------------
+'  Regulacion de control de calor basado en parametros de temperaturas de fase
+'-------------------------------------------------------------------------------
+PROCESS_PHASE:      
+    GOSUB READ_TEMPERATURE
+    GOSUB COMPUTE_PID
+
+    WHILE (elapsedTime <> 0)
+        IF (SecondsChanged = 1) THEN 
+            elapsedTime = elapsedTime - 1            
+            GOSUB READ_TEMPERATURE
+            GOSUB COMPUTE_PID         
+            TimeOn = (cycleTime * OutVal)/100            
+            Tvar = Tvar + 1            
+            IF (Tvar >= outMax) THEN Tvar = outMin            
+            IF (Tvar < TimeOn AND curTemp < setpoint) THEN
+               HIGH RELAY0 : HIGH LED0
+            ELSE 
+                LOW RELAY0 : LOW LED0
+            ENDIF
+            SecondsChanged = 0                        
+        ENDIF
+    WEND     
+RETURN
+   
+'-------------------------------------------------------------------------------
+'  Rampa a Setpoint 
+'-------------------------------------------------------------------------------
+RAMP_UP:        
+    WHILE (curTemp < setpoint)
+        IF (SecondsChanged = 1) THEN           
+            GOSUB READ_TEMPERATURE
+            GOSUB COMPUTE_PID         
+            TimeOn = (cycleTime * OutVal)/100           
+            Tvar = Tvar + 1            
+            IF (Tvar >= outMax) THEN Tvar = outMin            
+            IF (Tvar < TimeOn) THEN     
+                HIGH RELAY0 : HIGH LED0
+            ELSE 
+                LOW RELAY0 : LOW LED0
+            ENDIF
+         endif
+         SecondsChanged = 0                       
+    WEND
+    RETURN 
+
+'-------------------------------------------------------------------------------
+'  Proceso:  COMPUTE_PID()
+'  Description:  Algoritmo PID
+'-------------------------------------------------------------------------------
+COMPUTE_PID:     
+    errorCurrent = setpoint - curTemp    
+    pTerm = Kp * errorCurrent       
+    iTerm = iTerm + (Ki * errorCurrent)       
+    IF (iterm > outMax) THEN iTerm = outMax
+    IF (iTerm < outMin) THEN iTerm = outMin 
+    dTerm = (curTemp - lastMeasured)    
+    OutVal = (pTerm + (iTerm - (Kd * dTerm)))
+    lastMeasured = curTemp    
+    RETURN
+
+'-------------------------------------------------------------------------------
+'  Lectura de Temperatura 
+'-------------------------------------------------------------------------------
+READ_TEMPERATURE:    
+    ' Obtener un muestreo    
+    ;index = 0           
+    ;FOR INDEX = 0 TO 4
+        ADCON0.2 = 1    
+ESPERAR:IF ADCON0.2 = 1 THEN GOTO ESPERAR
+        curTemp=ADRESL
+        IF ADRESH = 1 THEN curtemp = curtemp+255
+        IF ADRESH = 2 THEN curtemp = curtemp+510
+        IF ADRESH = 3 THEN curtemp = curtemp+765
+        curtemp=curtemp/4        
+        ;ARRAY_TEMPS[INDEX] = curTemp          
+    ;NEXT index    
+    ;curTemp = 0    
+    ' Promediar los valores de muestreo
+    ;FOR index = 0 TO 4
+        ;curTemp = curTemp + ARRAY_TEMPS[index]
+    ;NEXT index
+    ;curTemp = curTemp/4
+    RETURN
+
+'-------------------------------------------------------------------------------
+'  Rutina de selección de menu
+'-------------------------------------------------------------------------------
+MENU_BOTONES:
+        'Proceso boton flecha arriba
+        IF (SW1 = 1) THEN valor=valor+1 : gosub ANTIRREBOTE : return
+        'Proceso boton flecha abajo
+        IF (SW2 = 1) THEN valor=valor-1 : gosub ANTIRREBOTE : return
+        'Proceso boton flecha enter
+        IF (SW3 = 1) THEN enter=1 : gosub ANTIRREBOTE : return               
+        'Proceso boton flecha derecha
+        IF (SW4 = 1) THEN index=index+1 :gosub ANTIRREBOTE : return        
+        'Proceso boton flecha izquierda
+        IF (SW5 = 1) THEN index=index-1 : gosub ANTIRREBOTE : return
+    goto MENU_BOTONES
+
+'-------------------------------------------------------------------------------
+'  Rutina Antirrebote de botones
+'-------------------------------------------------------------------------------
+ANTIRREBOTE:
+    IF (SW1 = 1) then goto ANTIRREBOTE
+    IF (SW2 = 1) then goto ANTIRREBOTE
+    IF (SW3 = 1) then goto ANTIRREBOTE
+    IF (SW4 = 1) then goto ANTIRREBOTE
+    IF (SW5 = 1) then goto ANTIRREBOTE
+    return
+
+'-------------------------------------------------------------------------------
+'  Leer valores de perfil de EEPROM
+'-------------------------------------------------------------------------------
+READ_PROFILE:
+     READ 0,PREHEAT_TEMPERATURE
+     READ 1,PREHEAT_TIME
+     READ 2,SOAK_TEMPERATURE
+     READ 3,SOAK_TIME     
+     READ 4,REFLOW_TEMPERATURE
+     READ 5,REFLOW_TIME
+     READ 6,COOLDOWN_TEMPERATURE
+     READ 7,COOLDOWN_TIME
+    RETURN
+ 
+'-------------------------------------------------------------------------------
+'  Escribir valores de perfil en EEPROM
+'-------------------------------------------------------------------------------
+WRITE_PROFILE:
+    IF VALOR = lastMeasured THEN RETURN
+     write 0,PREHEAT_TEMPERATURE
+     write 1,PREHEAT_TIME
+     write 2,SOAK_TEMPERATURE
+     write 3,SOAK_TIME     
+     write 4,REFLOW_TEMPERATURE
+     write 5,REFLOW_TIME
+     write 6,COOLDOWN_TEMPERATURE
+     write 7,COOLDOWN_TIME
+    RETURN
+
+'-------------------------------------------------------------------------------
+'  Leer valores PID de EEPROM
+'-------------------------------------------------------------------------------
+READ_PID:
+     READ 8,Kp
+     READ 9,Ki
+     READ 10,Kd
+     READ 11,cycleTime
+    RETURN
+ 
+'-------------------------------------------------------------------------------
+'  Escribir valores PID de EEPROM
+'-------------------------------------------------------------------------------
+WRITE_PID:
+    IF VALOR = lastMeasured THEN RETURN
+     write 8,Kp
+     write 9,Ki
+     write 10,Kd
+     write 11,cycleTime
+    RETURN
+
+'-------------------------------------------------------------------------------
+'  Caracteres de usuario
+'-------------------------------------------------------------------------------
+CUSTOM_CHARACTERS:
+    'Simbolo de grado centígrado
+    LCDOUT $FE,64
+    LCDOUT $C,$12,$12,$C,$0,$0,$0,$0
+    ;Simbolo de porcentaje
+    LCDOUT $FE,72
+    LCDOUT $18,$19,$2,$4,$8,$13,$3,$0
+    ;Simbolo de copyright
+    LCDOUT $FE,80
+    LCDOUT $C,$12,$10,$12,$C,$0,$0,$0
+    ;Simbolo de flecha arriba
+    ;LCDOUT $FE,72
+    ;LCDOUT $4,$E,$15,$4,$4,$4,$4,$0
+    ;Simbolo de flecha abajo
+    ;LCDOUT $FE,80
+    ;LCDOUT $4,$4,$4,$4,$15,$E,$4,$0   
+    RETURN
+
+'-------------------------------------------------------------------------------
+'  Generar sonido en buzzer para indicar proceso completo
+'-------------------------------------------------------------------------------
+BEEP:
+    SOUND BUZZER,[100,10,127,10]
+    PAUSE 100
+    SOUND BUZZER,[100,10,127,10]
+    RETURN
+
+'-------------------------------------------------------------------------------
+'  Rutina de Interrupción
+'-------------------------------------------------------------------------------
+    disable
+    conteo:
+    segundos=segundos+1
+    if segundos=60 then segundos=0 : minutos=minutos+1
+    if minutos=60 then minutos=0
+    lcdout $FE,$8E, dec2 segundos
+    if segundos=0 then lcdout $FE,$8B,dec2 minutos
+    LCDOUT $FE,$85,DEC3 curTemp,$FE,$c5,DEC3 setpoint,$fe,$cc,DEC3 ELAPSEDTIME      
+    SecondsChanged = 1
+    toggle OPTION_REG.6
+    INTCON.1=0
+    resume
+    enable
+
+end
